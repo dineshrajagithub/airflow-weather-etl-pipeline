@@ -1,0 +1,65 @@
+# Local stack: Airflow (LocalExecutor) + Postgres warehouse + MinIO (S3-compatible raw zone)
+x-airflow-env: &airflow-env
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db:5432/airflow
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW_CONN_WAREHOUSE_POSTGRES: postgresql://warehouse:warehouse@postgres-dw:5432/warehouse
+  S3_ENDPOINT_URL: http://minio:9000
+  RAW_BUCKET: weather-raw
+  AWS_ACCESS_KEY_ID: minioadmin
+  AWS_SECRET_ACCESS_KEY: minioadmin
+  AWS_DEFAULT_REGION: us-east-1
+  PYTHONPATH: /opt/airflow
+  _PIP_ADDITIONAL_REQUIREMENTS: "boto3==1.35.* pandas==2.2.*"
+
+services:
+  airflow-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 10
+
+  postgres-dw:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: warehouse
+      POSTGRES_PASSWORD: warehouse
+      POSTGRES_DB: warehouse
+    ports: ["5433:5432"]
+    volumes: [dw-data:/var/lib/postgresql/data]
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports: ["9000:9000", "9001:9001"]
+
+  create-bucket:
+    image: minio/mc:latest
+    depends_on: [minio]
+    entrypoint: >
+      /bin/sh -c "sleep 5 && mc alias set local http://minio:9000 minioadmin minioadmin
+      && mc mb --ignore-existing local/weather-raw"
+
+  airflow:
+    image: apache/airflow:2.10.5-python3.11
+    command: standalone
+    depends_on:
+      airflow-db:
+        condition: service_healthy
+    environment: *airflow-env
+    ports: ["8080:8080"]
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./etl:/opt/airflow/etl
+      - ./sql:/opt/airflow/sql
+
+volumes:
+  dw-data:
